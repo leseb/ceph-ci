@@ -1241,7 +1241,8 @@ class RGWMetaSyncShardCR : public RGWCoroutine {
   rgw_meta_sync_marker& sync_marker;
   string marker;
   string max_marker;
-  const std::string& period_marker; //< max marker stored in next period
+  /// while true, incremental sync should wait and retry at the end of the log
+  const bool is_current_period;
 
   map<string, bufferlist> entries;
   map<string, bufferlist>::iterator iter;
@@ -1276,7 +1277,6 @@ class RGWMetaSyncShardCR : public RGWCoroutine {
   map<string, string> pos_to_prev;
 
   bool can_adjust_marker = false;
-  bool done_with_period = false;
 
   int total_entries = 0;
 
@@ -1284,10 +1284,11 @@ public:
   RGWMetaSyncShardCR(RGWMetaSyncEnv *_sync_env, const rgw_bucket& _pool,
                      const std::string& period, RGWMetadataLog* mdlog,
                      uint32_t _shard_id, rgw_meta_sync_marker& _marker,
-                     const std::string& period_marker, bool *_reset_backoff)
+                     bool is_current_period, bool *_reset_backoff)
     : RGWCoroutine(_sync_env->cct), sync_env(_sync_env), pool(_pool),
       period(period), mdlog(mdlog), shard_id(_shard_id), sync_marker(_marker),
-      period_marker(period_marker), inc_lock("RGWMetaSyncShardCR::inc_lock"),
+      is_current_period(is_current_period),
+      inc_lock("RGWMetaSyncShardCR::inc_lock"),
       reset_backoff(_reset_backoff) {
     *reset_backoff = false;
   }
@@ -1530,19 +1531,17 @@ public:
           yield;
         }
       }
-      mdlog_marker = sync_marker.marker;
       set_marker_tracker(new RGWMetaSyncShardMarkerTrack(sync_env,
                                                          sync_env->shard_obj_name(shard_id),
                                                          sync_marker));
 
       /*
-       * mdlog_marker: the remote sync marker positiion
+       * mdlog_marker: the remote sync marker position
        * sync_marker: the local sync marker position
        * max_marker: the max mdlog position that we fetched
        * marker: the current position we try to sync
-       * period_marker: the last marker before the next period begins (optional)
        */
-      marker = max_marker = sync_marker.marker;
+      mdlog_marker = marker = max_marker = sync_marker.marker;
       /* inc sync */
       do {
         if (!lease_cr->is_locked()) {
@@ -1550,11 +1549,7 @@ public:
           break;
         }
 #define INCREMENTAL_MAX_ENTRIES 100
-	ldout(sync_env->cct, 20) << __func__ << ":" << __LINE__ << ": shard_id=" << shard_id << " mdlog_marker=" << mdlog_marker << " sync_marker.marker=" << sync_marker.marker << " period_marker=" << period_marker << dendl;
-        if (!period_marker.empty() && period_marker <= marker) {
-          done_with_period = true;
-          break;
-        }
+	ldout(sync_env->cct, 20) << __func__ << ":" << __LINE__ << ": shard_id=" << shard_id << " mdlog_marker=" << mdlog_marker << " sync_marker.marker=" << sync_marker.marker << dendl;
 	if (mdlog_marker <= max_marker) {
 	  /* we're at the tip, try to bring more entries */
           ldout(sync_env->cct, 20) << __func__ << ":" << __LINE__ << ": shard_id=" << shard_id << " syncing mdlog for shard_id=" << shard_id << dendl;
@@ -1576,10 +1571,6 @@ public:
                                                &max_marker, INCREMENTAL_MAX_ENTRIES,
                                                &log_entries, &truncated));
           for (log_iter = log_entries.begin(); log_iter != log_entries.end(); ++log_iter) {
-            if (!period_marker.empty() && period_marker < log_iter->id) {
-              done_with_period = true;
-              break;
-            }
             if (!mdlog_entry.convert_from(*log_iter)) {
               ldout(sync_env->cct, 0) << __func__ << ":" << __LINE__ << ": ERROR: failed to convert mdlog entry, shard_id=" << shard_id << " log_entry: " << log_iter->id << ":" << log_iter->section << ":" << log_iter->name << ":" << log_iter->timestamp << " ... skipping entry" << dendl;
               continue;
@@ -1601,8 +1592,8 @@ public:
           }
         }
         collect_children();
-	ldout(sync_env->cct, 20) << __func__ << ":" << __LINE__ << ": shard_id=" << shard_id << " mdlog_marker=" << mdlog_marker << " max_marker=" << max_marker << " sync_marker.marker=" << sync_marker.marker << " period_marker=" << period_marker << dendl;
-        if (done_with_period) {
+	ldout(sync_env->cct, 20) << __func__ << ":" << __LINE__ << ": shard_id=" << shard_id << " mdlog_marker=" << mdlog_marker << " max_marker=" << max_marker << " sync_marker.marker=" << sync_marker.marker << dendl;
+        if (!is_current_period) {
           // return control to RGWMetaSyncCR and advance to the next period
           break;
         }
@@ -1643,20 +1634,20 @@ class RGWMetaSyncShardControlCR : public RGWBackoffControlCR
   RGWMetadataLog* mdlog;
   uint32_t shard_id;
   rgw_meta_sync_marker sync_marker;
-  const std::string period_marker;
+  const bool is_current_period;
 
 public:
   RGWMetaSyncShardControlCR(RGWMetaSyncEnv *_sync_env, const rgw_bucket& _pool,
                             const std::string& period, RGWMetadataLog* mdlog,
                             uint32_t _shard_id, const rgw_meta_sync_marker& _marker,
-                            std::string&& period_marker)
+                            bool is_current_period)
     : RGWBackoffControlCR(_sync_env->cct, true), sync_env(_sync_env),
       pool(_pool), period(period), mdlog(mdlog), shard_id(_shard_id),
-      sync_marker(_marker), period_marker(std::move(period_marker)) {}
+      sync_marker(_marker), is_current_period(is_current_period) {}
 
   RGWCoroutine *alloc_cr() {
     return new RGWMetaSyncShardCR(sync_env, pool, period, mdlog, shard_id,
-                                  sync_marker, period_marker, backoff_ptr());
+                                  sync_marker, is_current_period, backoff_ptr());
   }
 
   RGWCoroutine *alloc_finisher_cr() {
@@ -1715,6 +1706,7 @@ public:
           // get the mdlog for the current period (may be empty)
           auto& period_id = sync_status.sync_info.period;
           auto mdlog = sync_env->store->meta_mgr->get_log(period_id);
+          const bool is_current_period = !next;
 
           // prevent wakeup() from accessing shard_crs while we're spawning them
           std::lock_guard<std::mutex> lock(mutex);
@@ -1723,22 +1715,9 @@ public:
           for (const auto& m : sync_status.sync_markers) {
             uint32_t shard_id = m.first;
             auto& marker = m.second;
-
-            std::string period_marker;
-            if (next) {
-              // read the maximum marker from the next period's sync status
-              period_marker = next.get_period().get_sync_status()[shard_id];
-              if (period_marker.empty()) {
-                // no metadata changes have occurred on this shard, skip it
-                ldout(cct, 10) << "RGWMetaSyncCR: skipping shard " << shard_id
-                    << " with empty period marker" << dendl;
-                continue;
-              }
-            }
-
             auto cr = new RGWMetaSyncShardControlCR(sync_env, pool, period_id,
                                                     mdlog, shard_id, marker,
-                                                    std::move(period_marker));
+                                                    is_current_period);
             auto stack = spawn(cr, false);
             shard_crs[shard_id] = RefPair{cr, stack};
           }
