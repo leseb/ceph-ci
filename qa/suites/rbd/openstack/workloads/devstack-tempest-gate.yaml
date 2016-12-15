@@ -1,0 +1,112 @@
+tasks:
+- qemu:
+    all:
+      type: filesystem
+      cpus: 4
+      memory: 12288
+      disks:
+      - image_size: 30720
+      - image_size: 30720
+      test: http://git.ceph.com/?p={repo};a=blob_plain;hb={branch};f=qa/rbd/run_devstack_tempest.sh
+      image_url: https://cloud-images.ubuntu.com/releases/16.04/release/ubuntu-16.04-server-cloudimg-amd64-disk1.img
+      cloud_config_archive:
+      - type: text/cloud-config
+        content: |
+          users:
+          - name: stack
+            passwd: "$6$vyN6vojpGiywMH/a$EyPgzDuxTLtMGj5eUYijqyVcMqV8Lf4XcZEAvcujvEIFtQCAneFCUj2peLoDWILUnPR9WoaSOxTvl/X.rao/90"
+            lock_passwd: False
+            shell: /bin/bash
+            sudo: ["ALL=(root) NOPASSWD:ALL\nDefaults:stack,tempest !requiretty"]
+          - name: tempest
+            lock_passwd: False
+            shell: /bin/bash
+            sudo:
+            - "ALL=(root) NOPASSWD:/sbin/ip"
+            - "ALL=(root) NOPASSWD:/sbin/iptables"
+            - "ALL=(root) NOPASSWD:/usr/bin/ovsdb-client"
+          write_files:
+          - content: |
+              #!/bin/bash -ex
+              cd /opt/stack
+              git clone https://git.openstack.org/openstack-dev/devstack
+              cd devstack
+              git checkout stable/newton
+
+              cat <<EOF > local.conf
+              [[local|localrc]]
+              Q_USE_DEBUG_COMMAND=True
+              NETWORK_GATEWAY=10.1.0.1
+              USE_SCREEN=False
+              DATA_DIR=/opt/stack/data
+              ACTIVE_TIMEOUT=90
+              BOOT_TIMEOUT=90
+              ASSOCIATE_TIMEOUT=60
+              TERMINATE_TIMEOUT=60
+              MYSQL_PASSWORD=secretmysql
+              DATABASE_PASSWORD=secretdatabase
+              RABBIT_PASSWORD=secretrabbit
+              ADMIN_PASSWORD=secretadmin
+              SERVICE_PASSWORD=secretservice
+              SERVICE_TOKEN=111222333444
+              SWIFT_HASH=1234123412341234
+              ROOTSLEEP=0
+              ENABLED_SERVICES=c-api,c-bak,c-sch,c-vol,ceilometer-acentral,ceilometer-acompute,ceilometer-alarm-evaluator,ceilometer-alarm-notifier,ceilometer-anotification,ceilometer-api,ceilometer-collector,cinder,dstat,g-api,g-reg,horizon,key,mysql,n-api,n-cond,n-cpu,n-crt,n-obj,n-sch,q-agt,q-dhcp,q-l3,q-meta,q-metering,q-svc,quantum,rabbit,s-account,s-container,s-object,s-proxy,tempest
+              SKIP_EXERCISES=boot_from_volume,bundle,client-env,euca
+              SYSLOG=False
+              SCREEN_LOGDIR=/mnt/log/stack/screen-logs
+              LOGFILE=/mnt/log/stack/devstacklog.txt
+              VERBOSE=True
+              FIXED_RANGE=10.1.0.0/20
+              IPV4_ADDRS_SAFE_TO_USE=10.1.0.0/20
+              FLOATING_RANGE=172.24.5.0/24
+              PUBLIC_NETWORK_GATEWAY=172.24.5.1
+              FIXED_NETWORK_SIZE=4096
+              VIRT_DRIVER=libvirt
+              SWIFT_REPLICAS=1
+              LOG_COLOR=False
+              UNDO_REQUIREMENTS=False
+              CINDER_PERIODIC_INTERVAL=10
+
+              export OS_NO_CACHE=True
+              OS_NO_CACHE=True
+              CEILOMETER_BACKEND=mysql
+              LIBS_FROM_GIT=
+              DATABASE_QUERY_LOGGING=True
+              EBTABLES_RACE_FIX=True
+              CINDER_SECURE_DELETE=False
+              CINDER_VOLUME_CLEAR=none
+              LIBVIRT_TYPE=kvm
+              VOLUME_BACKING_FILE_SIZE=24G
+              TEMPEST_HTTP_IMAGE=http://git.openstack.org/static/openstack.png
+              FORCE_CONFIG_DRIVE=False
+
+              CINDER_ENABLED_BACKENDS=ceph:ceph
+              TEMPEST_STORAGE_PROTOCOL=ceph
+              REMOTE_CEPH=True
+              enable_plugin devstack-plugin-ceph git://git.openstack.org/openstack/devstack-plugin-ceph
+              EOF
+
+              export PYTHONUNBUFFERED=true
+              export PROJECTS="openstack/devstack-plugin-ceph $PROJECTS"
+
+              ./stack.sh
+            path: /home/stack/start.sh
+            permissions: 0755
+      - |
+        #!/bin/bash -ex
+        mount --bind /mnt/test_b /opt
+        mkdir /opt/stack
+        chown -R stack:stack /home/stack
+        chown -R stack:stack /opt/stack
+
+        mkdir /mnt/log/stack
+        chown -R stack:stack /mnt/log/stack
+        su -l stack ./start.sh
+
+        chown -R tempest:stack /opt/stack/tempest
+        chown -R tempest:stack /opt/stack/data/tempest
+        chmod -R o+rx /opt/stack/devstack/files
+
+        cd /opt/stack/tempest
+        sudo -H -u tempest tox -eall-plugin -- '(?!.*\[.*\bslow\b.*\])(^tempest\.(api|scenario)|(^cinder\.tests.tempest))' --concurrency=3
