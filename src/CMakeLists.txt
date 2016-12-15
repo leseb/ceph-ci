@@ -461,6 +461,7 @@ set(libcommon_files
   osd/OSDMap.cc
   common/histogram.cc
   osd/osd_types.cc
+  osd/OpRequest.cc
   common/blkdev.cc
   common/common_init.cc
   common/pipe.c
@@ -583,6 +584,7 @@ add_library(common_utf8 STATIC common/utf8.c)
 
 if(${WITH_LTTNG})
   add_subdirectory(tracing)
+  add_dependencies(common-objs oprequest-tp)
 endif(${WITH_LTTNG})
 
 add_subdirectory(global)
