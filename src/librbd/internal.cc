@@ -2310,10 +2310,13 @@ int mirror_image_disable_internal(ImageCtx *ictx, bool force,
     }
 
     ictx->user_flushed();
+    C_SaferCond ctx;
     {
       RWLock::RLocker owner_locker(ictx->owner_lock);
-      r = ictx->flush();
+      ictx->flush(&ctx);
     }
+    r = ctx.wait();
+
     ictx->perfcounter->inc(l_librbd_flush);
     return r;
   }
