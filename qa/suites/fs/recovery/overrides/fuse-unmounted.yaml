@@ -1,3 +1,7 @@
 overrides:
+  ceph:
+    conf:
+      global:
+        pid file = ""
   ceph-fuse:
     disabled: true
