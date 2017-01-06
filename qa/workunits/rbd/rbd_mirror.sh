@@ -255,7 +255,9 @@ stop_mirror ${CLUSTER1}
 stop_mirror ${CLUSTER2}
 set_pool_mirror_mode ${CLUSTER2} ${POOL} 'image'
 disable_mirror ${CLUSTER2} ${POOL} ${image}
-test_image_present ${CLUSTER1} ${POOL} ${image} 'present'
+if [ -z "${RBD_MIRROR_USE_RBD_MIRROR}" ]; then
+  test_image_present ${CLUSTER1} ${POOL} ${image} 'present'
+fi
 start_mirror ${CLUSTER1}
 wait_for_image_present ${CLUSTER1} ${POOL} ${image} 'deleted'
 set_pool_mirror_mode ${CLUSTER2} ${POOL} 'pool'
