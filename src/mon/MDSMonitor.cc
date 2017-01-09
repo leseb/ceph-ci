@@ -1582,9 +1582,12 @@ int MDSMonitor::management_command(
       return -ENOENT;
     }
 
+    string force;
+    cmd_getval(g_ceph_context,cmdmap, "force", force);
     int64_t metadata_num_objects = mon->pgmon()->pg_map.pg_pool_sum[metadata].stats.sum.num_objects;
-    if (metadata_num_objects > 0) {
-      ss << "pool '" << metadata_name << "' already contains some objects. Use another pool which is empty.";
+    if (force != "--force" && metadata_num_objects > 0) {
+      ss << "pool '" << metadata_name
+	 << "' already contains some objects. Use another pool which is empty.";
       return -EINVAL;
     }
 
