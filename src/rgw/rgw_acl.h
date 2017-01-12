@@ -314,13 +314,13 @@ public:
   multimap<string, ACLGrant>& get_grant_map() { return grant_map; }
   const multimap<string, ACLGrant>& get_grant_map() const { return grant_map; }
 
-  void create_default(const rgw_user& id, string name) {
+  void create_default(const rgw_user& id, string name, int perm_default = RGW_PERM_FULL_CONTROL) {
     acl_user_map.clear();
     acl_group_map.clear();
     referer_list.clear();
 
     ACLGrant grant;
-    grant.set_canon(id, name, RGW_PERM_FULL_CONTROL);
+    grant.set_canon(id, name, perm_default);
     add_grant(&grant);
   }
 };

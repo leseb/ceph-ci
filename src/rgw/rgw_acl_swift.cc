@@ -156,7 +156,7 @@ bool RGWAccessControlPolicy_SWIFT::create(RGWRados * const store,
                                           const std::string& read_list,
                                           const std::string& write_list)
 {
-  acl.create_default(id, name);
+  acl.create_default(id, name, SWIFT_PERM_ADMIN | SWIFT_PERM_READ);
   owner.set_id(id);
   owner.set_name(name);
 
