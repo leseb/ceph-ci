@@ -1619,8 +1619,11 @@ public:
       if (!can_adjust_marker) {
         return -EAGAIN;
       }
+
+      // return a fake error to break out of RGWBackoffControlCR, so
+      // RGWMetaSyncCR can advance to the next period
+      return -ENODATA;
     }
-    /* TODO */
     return 0;
   }
 };
@@ -1733,7 +1736,7 @@ public:
           std::lock_guard<std::mutex> lock(mutex);
           shard_crs.clear();
         }
-        if (ret < 0) {
+        if (ret < 0 && ret != -ENODATA) {
           return set_cr_error(ret);
         }
         // advance to the next period
