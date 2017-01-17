@@ -1085,16 +1085,23 @@ public:
 
   // -- backoff --
   Mutex backoff_lock;  // orders inside Backoff::lock
-  set<BackoffRef> pg_backoffs;
-  map<hobject_t,set<BackoffRef>,hobject_t::BitwiseComparator> oid_backoffs;
+  map<hobject_t,set<BackoffRef>,hobject_t::BitwiseComparator> backoffs;
 
-  void add_pg_backoff(SessionRef s, ceph_tid_t tid, uint32_t attempt);
-  void add_oid_backoff(SessionRef s, const hobject_t& oid, ceph_tid_t tid,
-		       uint32_t attempt);
-  void release_pg_backoffs();
-  void release_oid_backoffs();
-  void release_oid_backoffs(const hobject_t& oid);
+  void add_backoff(SessionRef s, const hobject_t& begin, const hobject_t& end,
+		   ceph_tid_t tid, uint32_t attempt);
+  void release_backoffs(const hobject_t& begin, const hobject_t& end);
   void clear_backoffs();
+
+  void add_pg_backoff(SessionRef s, ceph_tid_t tid, uint32_t attempt) {
+    hobject_t begin = info.pgid.pgid.get_hobj_start();
+    hobject_t end = info.pgid.pgid.get_hobj_end(pool.info.get_pg_num());
+    add_backoff(s, begin, end, tid, attempt);
+  }
+  void release_pg_backoffs() {
+    hobject_t begin = info.pgid.pgid.get_hobj_start();
+    hobject_t end = info.pgid.pgid.get_hobj_end(pool.info.get_pg_num());
+    release_backoffs(begin, end);
+  }
 
   void rm_backoff(BackoffRef b);
 

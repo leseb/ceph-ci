@@ -1217,6 +1217,21 @@ public:
       return p;
     }
 
+    hobject_t get_hobj() {
+      return hobject_t(target_oid,
+		       target_oloc.key,
+		       CEPH_NOSNAP,
+		       target_oloc.hash >= 0 ? target_oloc.hash : pgid.ps(),
+		       target_oloc.pool,
+		       target_oloc.nspace);
+    }
+
+    bool contained_by(const hobject_t& begin, const hobject_t& end) {
+      hobject_t h = get_hobj();
+      int r = cmp_bitwise(h, begin);
+      return r == 0 || (r > 0 && cmp_bitwise(h, end) < 0);
+    }
+
     void dump(Formatter *f) const;
   };
 
@@ -1752,6 +1767,8 @@ public:
   // -- osd sessions --
   struct OSDBackoff {
     epoch_t epoch;
+    uint64_t id;
+    hobject_t begin, end;
     ceph_tid_t first_tid;
     uint32_t first_attempt;
     map<ceph_tid_t,Op*> ops;
@@ -1770,8 +1787,8 @@ public:
     map<ceph_tid_t,CommandOp*> command_ops;
 
     // backoffs
-    map<pg_t,OSDBackoff> pg_backoffs;
-    map<hobject_t,OSDBackoff,hobject_t::BitwiseComparator> oid_backoffs;
+    map<hobject_t,OSDBackoff,hobject_t::BitwiseComparator> backoffs;
+    multimap<uint64_t,OSDBackoff*> backoffs_by_id;
 
     int osd;
     int incarnation;

@@ -30,6 +30,7 @@
 #include "common/perf_counters.h"
 
 #include "messages/MOSDOp.h"
+#include "messages/MOSDBackoff.h"
 #include "messages/MOSDSubOp.h"
 #include "messages/MOSDSubOpReply.h"
 #include "messages/MOSDPGTrim.h"
@@ -563,7 +564,7 @@ void PrimaryLogPG::wait_for_unreadable_object(
       return;  // drop it.
     session->put();  // get_priv takes a ref, and so does the SessionRef
     if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
-      add_oid_backoff(session, soid, osdop->get_tid(),
+      add_backoff(session, soid, soid, osdop->get_tid(),
 		      osdop->get_retry_attempt());
       backoff = true;
     }
@@ -1685,6 +1686,27 @@ void PrimaryLogPG::do_request(
       return;
     }
     do_op(op); // do it now
+    break;
+
+  case CEPH_MSG_OSD_BACKOFF:
+    {
+      MOSDBackoff *m = static_cast<MOSDBackoff*>(op->get_req());
+      SessionRef session((Session *)m->get_connection()->get_priv());
+      if (!session)
+	return;  // drop it.
+      session->put();  // get_priv takes a ref, and so does the SessionRef
+      hobject_t begin = info.pgid.pgid.get_hobj_start();
+      hobject_t end = info.pgid.pgid.get_hobj_end(pool.info.get_pg_num());
+      if (cmp_bitwise(begin, m->begin) < 0) {
+	begin = m->begin;
+      }
+      if (cmp_bitwise(end, m->end) > 0) {
+	end = m->end;
+      }
+      dout(10) << __func__ << " backoff ack id " << m->id
+	       << " [" << begin << "," << end << ")" << dendl;
+      session->ack_backoff(m->id, begin, end);
+    }
     break;
 
   case MSG_OSD_SUBOP:
@@ -9658,7 +9680,7 @@ void PrimaryLogPG::finish_degraded_object(const hobject_t& oid)
       i->second == oid.snap)
     objects_blocked_on_degraded_snap.erase(i);
 
-  release_oid_backoffs(oid);
+  release_backoffs(oid, oid);
 }
 
 void PrimaryLogPG::_committed_pushed_object(

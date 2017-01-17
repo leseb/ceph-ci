@@ -61,32 +61,67 @@ typedef boost::intrusive_ptr<PG> PGRef;
  */
 
 struct Backoff : public RefCountedObject {
+  enum {
+    STATE_NEW = 1,     ///< backoff in flight to client
+    STATE_ACKED = 2,   ///< backoff acked
+    STATE_DELETING = 3 ///< backoff deleted, but un-acked
+  };
+  std::atomic_int state = {STATE_NEW};
+  uint64_t id = 0;     ///< unique id (within the Session)
+
+  bool is_new() const {
+    return state.load() == STATE_NEW;
+  }
+  bool is_acked() const {
+    return state.load() == STATE_ACKED;
+  }
+  bool is_deleting() const {
+    return state.load() == STATE_DELETING;
+  }
+  const char *get_state_name() const {
+    switch (state.load()) {
+    case STATE_NEW: return "new";
+    case STATE_ACKED: return "acked";
+    case STATE_DELETING: return "deleting";
+    default: return "???";
+    }
+  }
+
   Mutex lock;
-  // NOTE: the owning PG and session are either *both* set or both null.
+  // NOTE: the owning PG and session are either
+  //   - *both* set, or
+  //   - both null (teardown), or
+  //   - only session is set (and state == DELETING)
   PGRef pg;             ///< owning pg
   SessionRef session;   ///< owning session
-  boost::optional<pg_t> pgid;
-  boost::optional<hobject_t> oid;
+  hobject_t begin, end; ///< [) range to block, unless ==, then single obj
   ceph_tid_t first_tid = 0;
   uint32_t first_attempt = 0;
 
-  Backoff(PGRef pg, SessionRef s, pg_t p, ceph_tid_t t, uint32_t a)
+  Backoff(PGRef pg, SessionRef s,
+	  uint64_t i,
+	  const hobject_t& b, const hobject_t& e,
+	  ceph_tid_t t, uint32_t a)
     : RefCountedObject(g_ceph_context, 0),
+      id(i),
       lock("Backoff::lock"),
       pg(pg),
       session(s),
-      pgid(p),
+      begin(b),
+      end(e),
       first_tid(t),
       first_attempt(a) {}
-  Backoff(PGRef pg, SessionRef s, hobject_t o, ceph_tid_t t, uint32_t a)
-    : RefCountedObject(g_ceph_context, 0),
-      lock("Backoff::lock"),
-      pg(pg),
-      session(s),
-      oid(o),
-      first_tid(t),
-      first_attempt(a) {}
+
+  friend ostream& operator<<(ostream& out, const Backoff& b) {
+    return out << "Backoff(" << &b << " " << b.id
+	       << " " << b.get_state_name()
+	       << " [" << b.begin << "," << b.end << ") "
+	       << " session " << b.session
+	       << " pg " << b.pg
+	       << " tid " << b.first_tid << " attempt " << b.first_attempt << ")";
+  }
 };
+
 
 
 struct Session : public RefCountedObject {
@@ -109,8 +144,9 @@ struct Session : public RefCountedObject {
 
   /// protects backoffs; orders inside Backoff::lock *and* PG::backoff_lock
   Mutex backoff_lock;
-  map<hobject_t,BackoffRef, hobject_t::BitwiseComparator> oid_backoffs;
-  map<pg_t,BackoffRef> pg_backoffs;
+  map<hobject_t,BackoffRef, hobject_t::BitwiseComparator> backoffs;
+
+  std::atomic<uint64_t> backoff_seq = {0};
 
   explicit Session(CephContext *cct) :
     RefCountedObject(cct),
@@ -126,23 +162,35 @@ struct Session : public RefCountedObject {
     }
   }
 
+  void ack_backoff(uint64_t id, const hobject_t& start, const hobject_t& end) {
+    Mutex::Locker l(backoff_lock);
+    auto p = backoffs.lower_bound(start);
+    while (p != backoffs.end()) {
+      if (cmp_bitwise(p->first, end) >= 0) {
+	break;
+      }
+      Backoff *b = p->second.get();
+      if (b->id == id) {
+	if (b->is_new()) {
+	  b->state = Backoff::STATE_ACKED;
+	} else if (b->is_deleting()) {
+	  p = backoffs.erase(p);
+	  continue;
+	}
+      }
+      ++p;
+    }
+  }
+
   // called by PG::release_*_backoffs and PG::clear_backoffs()
   void rm_backoff(BackoffRef b) {
     Mutex::Locker l(backoff_lock);
     assert(b->lock.is_locked_by_me());
     assert(b->session == this);
-    if (b->oid) {
-      auto p = oid_backoffs.find(*b->oid);
-      // may race with clear_backoffs()
-      if (p != oid_backoffs.end()) {
-	oid_backoffs.erase(p);
-      }
-    } else {
-      auto p = pg_backoffs.find(*b->pgid);
-      // may race with clear_backoffs()
-      if (p != pg_backoffs.end()) {
-	pg_backoffs.erase(p);
-      }
+    auto p = backoffs.find(b->begin);
+    // may race with clear_backoffs()
+    if (p != backoffs.end()) {
+      backoffs.erase(p);
     }
   }
   void clear_backoffs();

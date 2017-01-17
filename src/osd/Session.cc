@@ -6,30 +6,23 @@
 
 void Session::clear_backoffs()
 {
-  map<hobject_t,BackoffRef,hobject_t::BitwiseComparator> oid;
-  map<pg_t,BackoffRef> pg;
+  map<hobject_t,BackoffRef,hobject_t::BitwiseComparator> ls;
   {
     Mutex::Locker l(backoff_lock);
-    oid.swap(oid_backoffs);
-    pg.swap(pg_backoffs);
+    ls.swap(backoffs);
   }
-  for (auto& p : oid) {
+  for (auto& p : ls) {
     Backoff *b = p.second.get();
     Mutex::Locker l(b->lock);
     if (b->pg) {
       assert(b->session == this);
+      assert(b->is_new() || b->is_acked());
       b->pg->rm_backoff(b);
       b->pg.reset();
       b->session.reset();
-    }
-  }
-  for (auto& p : pg) {
-    Backoff *b = p.second.get();
-    Mutex::Locker l(b->lock);
-    if (b->pg) {
+    } else if (b->session) {
       assert(b->session == this);
-      b->pg->rm_backoff(b);
-      b->pg.reset();
+      assert(b->is_deleting());
       b->session.reset();
     }
   }
