@@ -1803,6 +1803,22 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   dout(20) << __func__ << ": op " << *m << dendl;
 
+  hobject_t head(m->get_oid(), m->get_object_locator().key,
+		 CEPH_NOSNAP, m->get_pg().ps(),
+		 info.pgid.pool(), m->get_object_locator().nspace);
+
+  SessionRef session((Session *)m->get_connection()->get_priv());
+  if (!session.get()) {
+    dout(10) << __func__ << " no session" << dendl;
+    return;
+  }
+  session->put();  // get_priv() takes a ref, and so does the intrusive_ptr
+
+  if (session->have_backoff(head)) {
+    dout(10) << __func__ << " backoff on session " << session << dendl;
+    return;
+  }
+
   if (m->has_flag(CEPH_OSD_FLAG_PARALLELEXEC)) {
     // not implemented.
     dout(20) << __func__ << ": PARALLELEXEC not implemented " << *m << dendl;
@@ -1847,10 +1863,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     osd->reply_op_error(op, -EPERM);
     return;
   }
-
-  hobject_t head(m->get_oid(), m->get_object_locator().key,
-		 CEPH_NOSNAP, m->get_pg().ps(),
-		 info.pgid.pool(), m->get_object_locator().nspace);
 
   // object name too long?
   if (m->get_oid().name.size() > cct->_conf->osd_max_object_name_len) {

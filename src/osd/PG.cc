@@ -2353,6 +2353,8 @@ void PG::add_backoff(SessionRef s, const hobject_t& begin, const hobject_t& end,
     } else {
       b = new Backoff(this, s, ++s->backoff_seq, begin, end, tid, attempt);
       s->backoffs[begin] = b;
+      ++s->backoff_count;
+      assert(s->backoff_count == (int)s->backoffs.size());
       backoffs[begin].insert(b);
       dout(10) << __func__ << " session " << s
 	       << " added " << *b << dendl;

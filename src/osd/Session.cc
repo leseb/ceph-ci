@@ -10,6 +10,7 @@ void Session::clear_backoffs()
   {
     Mutex::Locker l(backoff_lock);
     ls.swap(backoffs);
+    backoff_count = 0;
   }
   for (auto& p : ls) {
     Backoff *b = p.second.get();
