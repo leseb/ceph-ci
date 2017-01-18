@@ -564,8 +564,13 @@ void PrimaryLogPG::wait_for_unreadable_object(
       return;  // drop it.
     session->put();  // get_priv takes a ref, and so does the SessionRef
     if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
-      add_backoff(session, soid, soid, osdop->get_tid(),
-		      osdop->get_retry_attempt());
+      if (!session->have_backoff(soid, osdop->get_tid(),
+				 osdop->get_retry_attempt())) {
+	add_backoff(session, soid, soid, osdop->get_tid(),
+		    osdop->get_retry_attempt());
+      } else {
+	dout(10) << __func__ << " already have backoff on " << soid << dendl;
+      }
       backoff = true;
     }
   }
@@ -1814,7 +1819,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
   session->put();  // get_priv() takes a ref, and so does the intrusive_ptr
 
-  if (session->have_backoff(head)) {
+  if (session->have_backoff(head, m->get_tid(), m->get_retry_attempt())) {
     dout(10) << __func__ << " backoff on session " << session << dendl;
     return;
   }

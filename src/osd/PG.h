@@ -1091,6 +1091,7 @@ public:
 		   ceph_tid_t tid, uint32_t attempt);
   void release_backoffs(const hobject_t& begin, const hobject_t& end);
   void clear_backoffs();
+  void split_backoffs(PG *child, unsigned split_bits);
 
   void add_pg_backoff(SessionRef s, ceph_tid_t tid, uint32_t attempt) {
     hobject_t begin = info.pgid.pgid.get_hobj_start();

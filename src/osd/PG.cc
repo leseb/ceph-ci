@@ -2313,7 +2313,7 @@ void PG::split_into(pg_t child_pgid, PG *child, unsigned split_bits)
   split_ops(child, split_bits);
   _split_into(child_pgid, child, split_bits);
 
-#warning split backoffs?
+  split_backoffs(child, split_bits);
 
   child->on_new_interval();
 
@@ -2333,32 +2333,15 @@ void PG::add_backoff(SessionRef s, const hobject_t& begin, const hobject_t& end,
   Backoff *b;
   {
     Mutex::Locker l(s->backoff_lock);
-    auto p = s->backoffs.find(begin);
-    if (p != s->backoffs.end()) {
-      b = p->second.get();
-      assert(b->end == end);
-      if (b->first_tid <= tid) {
-	dout(10) << __func__ << " session " << s
-		 << " tid " << tid << " attempt " << attempt
-		 << " had " << *b
-		 << dendl;
-	return;	// all good
-      }
-      dout(10) << __func__ << " session " << s
-	       << " tid " << tid << " attempt " << attempt
-	       << " had " << *b
-	       << ", adjusting down" << dendl;
-      b->first_tid = tid;
-      b->first_attempt = attempt;
-    } else {
-      b = new Backoff(this, s, ++s->backoff_seq, begin, end, tid, attempt);
-      s->backoffs[begin] = b;
+    b = new Backoff(this, s, ++s->backoff_seq, begin, end, tid, attempt);
+    auto& ls = s->backoffs[begin];
+    if (ls.empty()) {
       ++s->backoff_count;
-      assert(s->backoff_count == (int)s->backoffs.size());
-      backoffs[begin].insert(b);
-      dout(10) << __func__ << " session " << s
-	       << " added " << *b << dendl;
     }
+    assert(s->backoff_count == (int)s->backoffs.size());
+    ls.insert(b);
+    backoffs[begin].insert(b);
+    dout(10) << __func__ << " session " << s << " added " << *b << dendl;
   }
   con->send_message(
     new MOSDBackoff(
@@ -2425,6 +2408,71 @@ void PG::release_backoffs(const hobject_t& begin, const hobject_t& end)
 	b->session.reset();
       }
       b->pg.reset();
+    }
+  }
+}
+
+void PG::split_backoffs(PG *child, unsigned split_bits)
+{
+  dout(10) << __func__ << " split_bits " << split_bits << " child "
+	   << child->info.pgid.pgid << dendl;
+  unsigned mask = ~((~0)<<split_bits);
+  vector<BackoffRef> backoffs_to_dup;   // pg backoffs
+  vector<BackoffRef> backoffs_to_move;  // oid backoffs
+  {
+    Mutex::Locker l(backoff_lock);
+    auto p = backoffs.begin();
+    while (p != backoffs.end()) {
+      if (p->first == info.pgid.pgid.get_hobj_start()) {
+	// if it is a full PG we always dup it for the child.
+	for (auto& q : p->second) {
+	  dout(10) << __func__ << " pg backoff " << p->first
+		   << " " << q << dendl;
+	  backoffs_to_dup.push_back(q);
+	}
+      } else {
+	// otherwise, we move it to the child only if falls into the
+	// childs hash range.
+	if ((p->first.get_hash() & mask) == child->info.pgid.pgid.ps()) {
+	  for (auto& q : p->second) {
+	    dout(20) << __func__ << " will move " << p->first
+		     << " " << q << dendl;
+	    backoffs_to_move.push_back(q);
+	  }
+	  p = backoffs.erase(p);
+	  continue;
+	} else {
+	  dout(20) << __func__ << " will not move " << p->first
+		   << " " << p->second << dendl;
+	}
+      }
+      ++p;
+    }
+  }
+  for (auto b : backoffs_to_dup) {
+    SessionRef s;
+    {
+      Mutex::Locker l(b->lock);
+      b->end = info.pgid.pgid.get_hobj_end(split_bits);
+      dout(10) << __func__ << " pg backoff " << *b << dendl;
+      s = b->session;
+    }
+    if (s) {
+      child->add_pg_backoff(b->session, b->first_tid, b->first_attempt);
+    } else {
+      dout(20) << __func__ << "  didn't dup pg backoff, session is null"
+	       << dendl;
+    }
+  }
+  for (auto b : backoffs_to_move) {
+    Mutex::Locker l(b->lock);
+    if (b->pg == this) {
+      dout(10) << __func__ << " move backoff " << *b << " to child" << dendl;
+      b->pg = child;
+      child->backoffs[b->begin].insert(b);
+    } else {
+      dout(20) << __func__ << " move backoff " << *b << " nowhere... pg is null"
+	       << dendl;
     }
   }
 }

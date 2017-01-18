@@ -145,7 +145,7 @@ struct Session : public RefCountedObject {
   /// protects backoffs; orders inside Backoff::lock *and* PG::backoff_lock
   Mutex backoff_lock;
   std::atomic_int backoff_count= {0};  ///< simple count of backoffs
-  map<hobject_t,BackoffRef, hobject_t::BitwiseComparator> backoffs;
+  map<hobject_t,set<BackoffRef>, hobject_t::BitwiseComparator> backoffs;
 
   std::atomic<uint64_t> backoff_seq = {0};
 
@@ -170,31 +170,49 @@ struct Session : public RefCountedObject {
       if (cmp_bitwise(p->first, end) >= 0) {
 	break;
       }
-      Backoff *b = p->second.get();
-      if (b->id == id) {
-	if (b->is_new()) {
-	  b->state = Backoff::STATE_ACKED;
-	} else if (b->is_deleting()) {
-	  p = backoffs.erase(p);
-	  --backoff_count;
-	  continue;
+      auto q = p->second.begin();
+      while (q != p->second.end()) {
+	Backoff *b = (*q).get();
+	if (b->id == id) {
+	  if (b->is_new()) {
+	    b->state = Backoff::STATE_ACKED;
+	  } else if (b->is_deleting()) {
+	    q = p->second.erase(q);
+	    continue;
+	  }
 	}
+	++q;
       }
-      ++p;
+      if (p->second.empty()) {
+	p = backoffs.erase(p);
+	--backoff_count;
+      } else {
+	++p;
+      }
     }
     assert(backoff_count == (int)backoffs.size());
   }
 
-  bool have_backoff(const hobject_t& oid) {
+  bool have_backoff(const hobject_t& oid, ceph_tid_t tid, uint32_t attempt) {
     if (backoff_count.load()) {
       Mutex::Locker l(backoff_lock);
       assert(backoff_count == (int)backoffs.size());
       auto p = backoffs.lower_bound(oid);
       if (p != backoffs.end()) {
-	int r = cmp_bitwise(p->first, oid);
-	if (r == 0 ||
-	    (r < 0 && cmp_bitwise(oid, p->second->end) < 0))
-	  return true;
+	int r = cmp_bitwise(oid, p->first);
+	if (r == 0 || r > 0) {
+	  for (auto& q : p->second) {
+	    if (r == 0 || cmp_bitwise(oid, q->end) < 0) {
+	      if (tid >= q->first_tid) {
+#warning the use of tid/attempt is not suffucient... we need the
+		osd and the client to unambiguously agree on which requests
+		  the backoff applies to, regardless of what other requests
+		  are in flight...  ugh
+		return true;
+	      }
+	    }
+	  }
+	}
       }
     }
     return false;
@@ -208,8 +226,14 @@ struct Session : public RefCountedObject {
     auto p = backoffs.find(b->begin);
     // may race with clear_backoffs()
     if (p != backoffs.end()) {
-      backoffs.erase(p);
-      --backoff_count;
+      auto q = p->second.find(b);
+      if (q != p->second.end()) {
+	p->second.erase(q);
+	if (p->second.empty()) {
+	  backoffs.erase(p);
+	  --backoff_count;
+	}
+      }
     }
     assert(backoff_count == (int)backoffs.size());
   }
