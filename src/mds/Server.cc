@@ -1391,7 +1391,7 @@ void Server::handle_client_request(MClientRequest *req)
 	}
 	req->get_connection()->send_message(reply);
 
-	if (req->is_replay())
+	if (mds->is_clientreplay())
 	  mds->queue_one_replay();
 
 	req->put();
@@ -5587,14 +5587,7 @@ void Server::handle_client_unlink(MDRequestRef& mdr)
   if (in->is_dir() && in->has_subtree_root_dirfrag()) {
     // subtree root auths need to be witnesses
     set<mds_rank_t> witnesses;
-
-    list<CDir*> dfls;
-    in->get_subtree_dirfrags(dfls);
-    for (auto p : dfls) {
-      if (mds->get_nodeid() != p->get_dir_auth().first)
-	witnesses.insert(p->get_dir_auth().first);
-    }
-
+    in->list_replicas(witnesses);
     dout(10) << " witnesses " << witnesses << ", have " << mdr->more()->witnessed << dendl;
 
     for (set<mds_rank_t>::iterator p = witnesses.begin();
@@ -5824,6 +5817,12 @@ void Server::handle_slave_rmdir_prep(MDRequestRef& mdr)
   dout(10) << " src " << srcpath << dendl;
   CInode *in;
   int r = mdcache->path_traverse(mdr, NULL, NULL, srcpath, &trace, &in, MDS_TRAVERSE_DISCOVERXLOCK);
+  if (r > 0) return;
+  if (r == -ESTALE) {
+    mdcache->find_ino_peers(srcpath.get_ino(), new C_MDS_RetryRequest(mdcache, mdr),
+	mdr->slave_to_mds);
+    return;
+  }
   assert(r == 0);
   CDentry *dn = trace[trace.size()-1];
   dout(10) << " dn " << *dn << dendl;
@@ -6652,9 +6651,7 @@ version_t Server::_rename_prepare_import(MDRequestRef& mdr, CDentry *srcdn, buff
   prepare_force_open_sessions(mdr->more()->imported_client_map, mdr->more()->sseq_map);
 
   list<ScatterLock*> updated_scatterlocks;
-  mdcache->migrator->decode_import_inode(srcdn, blp, 
-					 srcdn->authority().first,
-					 mdr->ls, 0,
+  mdcache->migrator->decode_import_inode(srcdn, blp, srcdn->authority().first, mdr->ls,
 					 mdr->more()->cap_imports, updated_scatterlocks);
 
   // hack: force back to !auth and clean, temporarily

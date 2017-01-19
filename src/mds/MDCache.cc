@@ -2850,9 +2850,6 @@ void MDCache::handle_mds_failure(mds_rank_t who)
 {
   dout(7) << "handle_mds_failure mds." << who << dendl;
   
-  // make note of recovery set
-  mds->mdsmap->get_recovery_mds_set(recovery_set);
-  recovery_set.erase(mds->get_nodeid());
   dout(1) << "handle_mds_failure mds." << who << " : recovery peers are " << recovery_set << dendl;
 
   resolve_gather.insert(who);
@@ -3210,6 +3207,7 @@ void MDCache::handle_resolve(MMDSResolve *m)
 	    claimed_by_sender = true;
 	}
 
+	my_ambiguous_imports.erase(p);  // no longer ambiguous.
 	if (claimed_by_sender) {
 	  dout(7) << "ambiguous import failed on " << *dir << dendl;
 	  migrator->import_reverse(dir);
@@ -3217,7 +3215,6 @@ void MDCache::handle_resolve(MMDSResolve *m)
 	  dout(7) << "ambiguous import succeeded on " << *dir << dendl;
 	  migrator->import_finish(dir, true);
 	}
-	my_ambiguous_imports.erase(p);  // no longer ambiguous.
       }
       p = next;
     }
@@ -3510,11 +3507,13 @@ void MDCache::disambiguate_imports()
     map<dirfrag_t, vector<dirfrag_t> >::iterator q = my_ambiguous_imports.begin();
 
     CDir *dir = get_dirfrag(q->first);
-    if (!dir) continue;
+    assert(dir);
     
     if (dir->authority() != me_ambig) {
       dout(10) << "ambiguous import auth known, must not be me " << *dir << dendl;
       cancel_ambiguous_import(dir);
+
+      mds->mdlog->start_submit_entry(new EImportFinish(dir, false));
 
       // subtree may have been swallowed by another node claiming dir
       // as their own.
@@ -3523,8 +3522,6 @@ void MDCache::disambiguate_imports()
 	dout(10) << "  subtree root is " << *root << dendl;
       assert(root->dir_auth.first != mds->get_nodeid());  // no us!
       try_trim_non_auth_subtree(root);
-
-      mds->mdlog->start_submit_entry(new EImportFinish(dir, false));
     } else {
       dout(10) << "ambiguous import auth unclaimed, must be me " << *dir << dendl;
       finish_ambiguous_import(q->first);
