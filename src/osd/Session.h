@@ -204,10 +204,6 @@ struct Session : public RefCountedObject {
 	  for (auto& q : p->second) {
 	    if (r == 0 || cmp_bitwise(oid, q->end) < 0) {
 	      if (tid >= q->first_tid) {
-#warning the use of tid/attempt is not suffucient... we need the
-		osd and the client to unambiguously agree on which requests
-		  the backoff applies to, regardless of what other requests
-		  are in flight...  ugh
 		return true;
 	      }
 	    }

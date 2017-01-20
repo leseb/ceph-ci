@@ -3532,32 +3532,7 @@ void Objecter::handle_osd_backoff(MOSDBackoff *m)
   switch (m->op) {
   case CEPH_OSD_BACKOFF_OP_BLOCK:
     {
-      // ack
-      con->send_message(new MOSDBackoff(CEPH_OSD_BACKOFF_OP_ACK_BLOCK,
-					m->id, m->begin, m->end,
-					m->first_tid, m->first_attempt,
-					osdmap->get_epoch()));
-
       // register
-      Op *op = nullptr;
-      auto opi = s->ops.find(m->first_tid);
-      if (opi != s->ops.end()) {
-	op = opi->second;
-	if (op->session == s &&
-	    (op->attempts - 1) == (int)m->first_attempt) {
-	  // note: pgid might not match if there was a split
-	  ldout(cct, 20) << __func__ << " request " << op << " on "
-			 << op->target.pgid << " (effective pgid "
-			 << op->target.effective_pgid() << ")" << dendl;
-	} else {
-	  ldout(cct, 20) << __func__ << " request doesn't match, dropping"
-			 << dendl;
-	  break;
-	}
-      } else {
-	ldout(cct, 20) << __func__ << " request not found, dropping" << dendl;
-	break;
-      }
       OSDBackoff& b = s->backoffs[m->begin];
       s->backoffs_by_id.insert(make_pair(m->id, &b));
       b.id = m->id;
@@ -3577,6 +3552,12 @@ void Objecter::handle_osd_backoff(MOSDBackoff *m)
 	  ++p;
 	}
       }
+
+      // ack
+      con->send_message(new MOSDBackoff(CEPH_OSD_BACKOFF_OP_ACK_BLOCK,
+					m->id, m->begin, m->end,
+					m->first_tid, m->first_attempt,
+					osdmap->get_epoch()));
     }
     break;
 
