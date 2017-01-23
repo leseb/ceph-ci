@@ -1653,7 +1653,13 @@ void PrimaryLogPG::do_request(
 	return;  // drop it.
       session->put();  // get_priv takes a ref, and so does the SessionRef
       if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
-	add_pg_backoff(session, osdop->get_tid(), osdop->get_retry_attempt());
+	if (!session->have_backoff(info.pgid.pgid.get_hobj_start(),
+				   osdop->get_tid(),
+				   osdop->get_retry_attempt())) {
+	  add_pg_backoff(session, osdop->get_tid(), osdop->get_retry_attempt());
+	} else {
+	  dout(10) << " already have backoff" << dendl;
+	}
 	return;
       }
     }
