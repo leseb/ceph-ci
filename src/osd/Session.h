@@ -203,9 +203,9 @@ struct Session : public RefCountedObject {
 	if (r == 0 || r > 0) {
 	  for (auto& q : p->second) {
 	    if (r == 0 || cmp_bitwise(oid, q->end) < 0) {
-	      if (tid >= q->first_tid) {
+	      //if (tid >= q->first_tid) {
 		return true;
-	      }
+		//}
 	    }
 	  }
 	}

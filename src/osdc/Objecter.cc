@@ -1039,8 +1039,9 @@ bool Objecter::_check_request(
   case RECALC_OP_TARGET_NEED_RESEND:
     if (b) {
       // move from backoff to ops
-      s->ops[op->tid] = op;
-      *biter = b->ops.erase(*biter);
+      op->target.backoff = false;
+      //s->ops[op->tid] = op;
+      //*biter = b->ops.erase(*biter);
     }
     if (op->session) {
       _session_op_remove(op->session, op);
@@ -1051,8 +1052,9 @@ bool Objecter::_check_request(
   case RECALC_OP_TARGET_POOL_DNE:
     if (b) {
       // move from backoff to ops, just for _check_op_pool_dne's benefit
-      s->ops[op->tid] = op;
-      *biter = b->ops.erase(*biter);
+      op->target.backoff = false;
+      //s->ops[op->tid] = op;
+      //*biter = b->ops.erase(*biter);
     }
     _check_op_pool_dne(op, sl);
     break;
@@ -1120,7 +1122,7 @@ void Objecter::_scan_requests(OSDSession *s,
 		   nullptr, nullptr, need_resend);
   }
 
-  // check backoffs, too
+  /*// check backoffs, too
   auto bp = s->backoffs.begin();
   while (bp != s->backoffs.end()) {
     hobject_t begin = bp->first;
@@ -1146,6 +1148,7 @@ void Objecter::_scan_requests(OSDSession *s,
       s->backoffs.erase(b.begin);
     }
   }
+  */
 
   // commands
   map<ceph_tid_t,CommandOp*>::iterator cp = s->command_ops.begin();
@@ -1340,7 +1343,9 @@ void Objecter::handle_osd_map(MOSDMap *m)
       _session_op_assign(s, op);
     }
     if (op->should_resend) {
-      if (!op->session->is_homeless() && !op->target.paused) {
+      if (!op->session->is_homeless()
+	  && !op->target.paused
+	  && !op->target.backoff) {
 	logger->inc(l_osdc_op_resend);
 	_send_op(op);
       }
@@ -2018,11 +2023,11 @@ void Objecter::_kick_requests(OSDSession *session,
   // rwlock is locked unique
 
   // requeue backoff ops
-  for (auto& p : session->backoffs) {
+  /*for (auto& p : session->backoffs) {
     for (auto& q : p.second.ops) {
       session->ops[q.first] = q.second;
     }
-  }
+    }*/
   session->backoffs.clear();
   session->backoffs_by_id.clear();
 
@@ -2033,6 +2038,7 @@ void Objecter::_kick_requests(OSDSession *session,
     Op *op = p->second;
     ++p;
     logger->inc(l_osdc_op_resend);
+    op->target.backoff = false;
     if (op->should_resend) {
       if (!op->target.paused)
 	resend[op->tid] = op;
@@ -2463,8 +2469,7 @@ void Objecter::_op_submit(Op *op, shunique_lock& sul, ceph_tid_t *ptid)
       if (r == 0 || (r > 0 && cmp_bitwise(hoid, q->second.end) < 0)) {
 	ldout(cct, 10) << " backoff on " << hoid << ", queuing "
 		       << op << " tid " << op->tid << dendl;
-	q->second.ops[op->tid] = op;
-	backoff = true;
+	op->target.backoff = true;
       }
     }
     if (!backoff) {
@@ -3541,15 +3546,14 @@ void Objecter::handle_osd_backoff(MOSDBackoff *m)
       b.epoch = m->osd_epoch;
       b.first_tid = m->first_tid;
       b.first_attempt = m->first_attempt;
-      auto p = s->ops.lower_bound(m->first_tid);
-      while (p != s->ops.end()) {
+      for (auto p = s->ops.begin(); //lower_bound(m->first_tid);
+	   p != s->ops.end(); ++p) {
 	if (p->second->target.contained_by(b.begin, b.end)) {
 	  ldout(cct, 20) << __func__ << "  tid " << p->first
 			 << " op " << p->second << dendl;
-	  b.ops[p->first] = p->second;
-	  p = s->ops.erase(p);
-	} else {
-	  ++p;
+	  //b.ops[p->first] = p->second;
+	  //p = s->ops.erase(p);
+	  p->second->target.backoff = true;
 	}
       }
 
@@ -3577,11 +3581,12 @@ void Objecter::handle_osd_backoff(MOSDBackoff *m)
 			 << ") first_tid " << b->first_tid
 			 << " attempt " << b->first_attempt
 			 << dendl;
-	  for (auto& q : b->ops) {
+	  /*for (auto& q : b->ops) {
 	    logger->inc(l_osdc_op_resend);
 	    _send_op(q.second);
 	    s->ops[q.first] = q.second;
 	  }
+	  */
 	  s->backoffs.erase(b->begin);
 	  p = s->backoffs_by_id.erase(p);
 	} else {
@@ -3591,6 +3596,12 @@ void Objecter::handle_osd_backoff(MOSDBackoff *m)
 			 << " attempt " << b->first_attempt
 			 << dendl;
 	  ++p;
+	}
+	for (auto& q : s->ops) {
+	  if (q.second->target.contained_by(b->begin, b->end)) {
+	    q.second->target.backoff = false;
+	    _send_op(q.second);
+	  }
 	}
       }
     }

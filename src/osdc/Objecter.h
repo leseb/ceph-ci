@@ -1190,6 +1190,7 @@ public:
 
     bool used_replica;
     bool paused;
+    bool backoff = false;
 
     int osd;      ///< the final target osd, or -1
 
@@ -1771,7 +1772,7 @@ public:
     hobject_t begin, end;
     ceph_tid_t first_tid;
     uint32_t first_attempt;
-    map<ceph_tid_t,Op*> ops;
+    //map<ceph_tid_t,Op*> ops;
   };
 
   struct OSDSession : public RefCountedObject {
