@@ -2329,7 +2329,7 @@ void PG::add_backoff(SessionRef s, const hobject_t& begin, const hobject_t& end,
   ConnectionRef con = s->con;
   if (!con)   // OSD::ms_handle_reset clears s->con without a lock
     return;
-  if (have_backoff(s, begin, tid, attempt)) {
+  if (s->have_backoff(begin, tid, attempt)) {
     derr << __func__ << " already ahve bckoff for " << s << " begin "
 	 << " tid " << tid << " attempt " << attempt << dendl;
     ceph_abort();
