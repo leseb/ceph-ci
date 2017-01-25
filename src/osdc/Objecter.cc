@@ -1039,7 +1039,7 @@ bool Objecter::_check_request(
   case RECALC_OP_TARGET_NEED_RESEND:
     if (b) {
       // move from backoff to ops
-      op->target.backoff = false;
+      //op->target.backoff = false;
       //s->ops[op->tid] = op;
       //*biter = b->ops.erase(*biter);
     }
@@ -1052,7 +1052,7 @@ bool Objecter::_check_request(
   case RECALC_OP_TARGET_POOL_DNE:
     if (b) {
       // move from backoff to ops, just for _check_op_pool_dne's benefit
-      op->target.backoff = false;
+      //op->target.backoff = false;
       //s->ops[op->tid] = op;
       //*biter = b->ops.erase(*biter);
     }
@@ -1344,8 +1344,7 @@ void Objecter::handle_osd_map(MOSDMap *m)
     }
     if (op->should_resend) {
       if (!op->session->is_homeless()
-	  && !op->target.paused
-	  && !op->target.backoff) {
+	  && !op->target.paused) {
 	logger->inc(l_osdc_op_resend);
 	_send_op(op);
       }
@@ -2038,7 +2037,7 @@ void Objecter::_kick_requests(OSDSession *session,
     Op *op = p->second;
     ++p;
     logger->inc(l_osdc_op_resend);
-    op->target.backoff = false;
+    //op->target.backoff = false;
     if (op->should_resend) {
       if (!op->target.paused)
 	resend[op->tid] = op;
@@ -2460,21 +2459,7 @@ void Objecter::_op_submit(Op *op, shunique_lock& sul, ceph_tid_t *ptid)
   _session_op_assign(s, op);
 
   if (need_send) {
-    // backoff?
-    hobject_t hoid = op->target.get_hobj();
-    auto q = s->backoffs.lower_bound(hoid);
-    if (q != s->backoffs.end()) {
-      int r = cmp_bitwise(hoid, q->second.begin);
-      if (r == 0 || (r > 0 && cmp_bitwise(hoid, q->second.end) < 0)) {
-	ldout(cct, 10) << " backoff on " << hoid << ", queuing "
-		       << op << " tid " << op->tid << dendl;
-	op->target.backoff = true;
-      }
-    }
-    if (!op->target.backoff) {
-      // no backoff, send!
-      _send_op(op, m);
-    }
+    _send_op(op, m);
   }
 
   // Last chance to touch Op here, after giving up session lock it can
@@ -3186,6 +3171,18 @@ void Objecter::_send_op(Op *op, MOSDOp *m)
   // rwlock is locked
   // op->session->lock is locked
 
+  // backoff?
+  hobject_t hoid = op->target.get_hobj();
+  auto q = op->session->backoffs.lower_bound(hoid);
+  if (q != op->session->backoffs.end()) {
+    int r = cmp_bitwise(hoid, q->second.begin);
+    if (r == 0 || (r > 0 && cmp_bitwise(hoid, q->second.end) < 0)) {
+      ldout(cct, 10) << __func__ << " backoff on " << hoid << ", queuing "
+		     << op << " tid " << op->tid << dendl;
+      return;
+    }
+  }
+  
   if (!m) {
     assert(op->tid > 0);
     m = _prepare_osd_op(op);
@@ -3552,7 +3549,7 @@ void Objecter::handle_osd_backoff(MOSDBackoff *m)
 			 << " op " << p->second << dendl;
 	  //b.ops[p->first] = p->second;
 	  //p = s->ops.erase(p);
-	  p->second->target.backoff = true;
+	  //p->second->target.backoff = true;
 	}
       }
 
@@ -3598,7 +3595,7 @@ void Objecter::handle_osd_backoff(MOSDBackoff *m)
 	}
 	for (auto& q : s->ops) {
 	  if (q.second->target.contained_by(b->begin, b->end)) {
-	    q.second->target.backoff = false;
+	    //q.second->target.backoff = false;
 	    _send_op(q.second);
 	  }
 	}

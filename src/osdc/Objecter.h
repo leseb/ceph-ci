@@ -1190,7 +1190,6 @@ public:
 
     bool used_replica;
     bool paused;
-    bool backoff = false;
 
     int osd;      ///< the final target osd, or -1
 

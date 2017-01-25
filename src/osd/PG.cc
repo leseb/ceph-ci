@@ -972,11 +972,11 @@ void PG::clear_primary_state()
 
   missing_loc.clear();
 
-  if (is_primary()) {
-    release_pg_backoffs();
-  } else {
-    clear_backoffs();
-  }
+  //if (is_primary()) {
+  release_pg_backoffs();
+  //} else {
+  //clear_backoffs();
+//}
 
   pg_log.reset_recovery_pointers();
 
