@@ -564,12 +564,13 @@ void PrimaryLogPG::wait_for_unreadable_object(
       return;  // drop it.
     session->put();  // get_priv takes a ref, and so does the SessionRef
     if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
-      if (!session->have_backoff(soid, osdop->get_tid(),
-				 osdop->get_retry_attempt())) {
+      Backoff *b = session->have_backoff(soid, osdop->get_tid(),
+					 osdop->get_retry_attempt());
+      if (!b) {
 	add_backoff(session, soid, soid, osdop->get_tid(),
 		    osdop->get_retry_attempt());
       } else {
-	dout(10) << __func__ << " already have backoff on " << soid
+	dout(10) << __func__ << " already have backoff " << *b << " "
 		 << " " << *osdop << dendl;
       }
       backoff = true;
@@ -1619,6 +1620,26 @@ void PrimaryLogPG::get_src_oloc(const object_t& oid, const object_locator_t& olo
     src_oloc.key = oid.name;
 }
 
+void PrimaryLogPG::handle_backoff(OpRequestRef& op)
+{
+  MOSDBackoff *m = static_cast<MOSDBackoff*>(op->get_req());
+  SessionRef session((Session *)m->get_connection()->get_priv());
+  if (!session)
+    return;  // drop it.
+  session->put();  // get_priv takes a ref, and so does the SessionRef
+  hobject_t begin = info.pgid.pgid.get_hobj_start();
+  hobject_t end = info.pgid.pgid.get_hobj_end(pool.info.get_pg_num());
+  if (cmp_bitwise(begin, m->begin) < 0) {
+    begin = m->begin;
+  }
+  if (cmp_bitwise(end, m->end) > 0) {
+    end = m->end;
+  }
+  dout(10) << __func__ << " backoff ack id " << m->id
+	   << " [" << begin << "," << end << ")" << dendl;
+  session->ack_backoff(cct, m->id, begin, end);
+}
+
 void PrimaryLogPG::do_request(
   OpRequestRef& op,
   ThreadPool::TPHandle &handle)
@@ -1636,6 +1657,7 @@ void PrimaryLogPG::do_request(
     return;
   }
 
+  // pg-wide backoffs
   if (op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
     bool backoff =
       is_down() ||
@@ -1654,17 +1676,25 @@ void PrimaryLogPG::do_request(
 	return;  // drop it.
       session->put();  // get_priv takes a ref, and so does the SessionRef
       if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
-	if (!session->have_backoff(info.pgid.pgid.get_hobj_start(),
-				   osdop->get_tid(),
-				   osdop->get_retry_attempt())) {
+	Backoff *b = session->have_backoff(info.pgid.pgid.get_hobj_start(),
+					   osdop->get_tid(),
+					   osdop->get_retry_attempt());
+	if (!b) {
 	  add_pg_backoff(session, osdop->get_tid(), osdop->get_retry_attempt());
 	} else {
-	  dout(10) << " already have backoff on " << *osdop << dendl;
+	  dout(10) << " already have backoff " << *b << " " << *osdop << dendl;
 	}
 	return;
       }
     }
   }
+  // pg backoff acks at pg-level
+  if (op->get_req()->get_type() == CEPH_MSG_OSD_BACKOFF) {
+    MOSDBackoff *m = static_cast<MOSDBackoff*>(op->get_req());
+    if (m->begin != m->end) {
+      handle_backoff(op);
+    }
+  }    
 
   if (!is_peered()) {
     // Delay unless PGBackend says it's ok
@@ -1685,39 +1715,27 @@ void PrimaryLogPG::do_request(
 
   switch (op->get_req()->get_type()) {
   case CEPH_MSG_OSD_OP:
+  case CEPH_MSG_OSD_BACKOFF:
     if (!is_active()) {
       dout(20) << " peered, not active, waiting for active on " << op << dendl;
       waiting_for_active.push_back(op);
       op->mark_delayed("waiting for active");
       return;
     }
-    // verify client features
-    if ((pool.info.has_tiers() || pool.info.is_tier()) &&
-	!op->has_feature(CEPH_FEATURE_OSD_CACHEPOOL)) {
-      osd->reply_op_error(op, -EOPNOTSUPP);
-      return;
-    }
-    do_op(op); // do it now
-    break;
-
-  case CEPH_MSG_OSD_BACKOFF:
-    {
-      MOSDBackoff *m = static_cast<MOSDBackoff*>(op->get_req());
-      SessionRef session((Session *)m->get_connection()->get_priv());
-      if (!session)
-	return;  // drop it.
-      session->put();  // get_priv takes a ref, and so does the SessionRef
-      hobject_t begin = info.pgid.pgid.get_hobj_start();
-      hobject_t end = info.pgid.pgid.get_hobj_end(pool.info.get_pg_num());
-      if (cmp_bitwise(begin, m->begin) < 0) {
-	begin = m->begin;
+    switch (op->get_req()->get_type()) {
+    case CEPH_MSG_OSD_OP:
+      // verify client features
+      if ((pool.info.has_tiers() || pool.info.is_tier()) &&
+	  !op->has_feature(CEPH_FEATURE_OSD_CACHEPOOL)) {
+	osd->reply_op_error(op, -EOPNOTSUPP);
+	return;
       }
-      if (cmp_bitwise(end, m->end) > 0) {
-	end = m->end;
-      }
-      dout(10) << __func__ << " backoff ack id " << m->id
-	       << " [" << begin << "," << end << ")" << dendl;
-      session->ack_backoff(m->id, begin, end);
+      do_op(op);
+      break;
+    case CEPH_MSG_OSD_BACKOFF:
+      // object-level backoff acks handled in osdop context
+      handle_backoff(op);
+      break;
     }
     break;
 
@@ -1826,9 +1844,10 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   }
   session->put();  // get_priv() takes a ref, and so does the intrusive_ptr
 
-  if (session->have_backoff(head, m->get_tid(), m->get_retry_attempt())) {
-    dout(10) << __func__ << " backoff on session " << session
-	     << " op " << *m << dendl;
+  Backoff *b = session->have_backoff(head, m->get_tid(),
+				     m->get_retry_attempt());
+  if (b) {
+    dout(10) << __func__ << " have backoff " << *b << " " << *m << dendl;
     return;
   }
 

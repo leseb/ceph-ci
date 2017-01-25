@@ -2329,13 +2329,14 @@ void PG::add_backoff(SessionRef s, const hobject_t& begin, const hobject_t& end,
   ConnectionRef con = s->con;
   if (!con)   // OSD::ms_handle_reset clears s->con without a lock
     return;
-  if (s->have_backoff(begin, tid, attempt)) {
-    derr << __func__ << " already ahve bckoff for " << s << " begin "
-	 << " tid " << tid << " attempt " << attempt << dendl;
+  Backoff *b = s->have_backoff(begin, tid, attempt);
+  if (b) {
+    derr << __func__ << " already have backoff for " << s << " begin "
+	 << " tid " << tid << " attempt " << attempt
+	 << " " << *b << dendl;
     ceph_abort();
   }
   Mutex::Locker l(backoff_lock);
-  Backoff *b;
   {
     Mutex::Locker l(s->backoff_lock);
     b = new Backoff(this, s, ++s->backoff_seq, begin, end, tid, attempt);

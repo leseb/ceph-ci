@@ -163,37 +163,13 @@ struct Session : public RefCountedObject {
     }
   }
 
-  void ack_backoff(uint64_t id, const hobject_t& start, const hobject_t& end) {
-    Mutex::Locker l(backoff_lock);
-    auto p = backoffs.lower_bound(start);
-    while (p != backoffs.end()) {
-      if (cmp_bitwise(p->first, end) >= 0) {
-	break;
-      }
-      auto q = p->second.begin();
-      while (q != p->second.end()) {
-	Backoff *b = (*q).get();
-	if (b->id == id) {
-	  if (b->is_new()) {
-	    b->state = Backoff::STATE_ACKED;
-	  } else if (b->is_deleting()) {
-	    q = p->second.erase(q);
-	    continue;
-	  }
-	}
-	++q;
-      }
-      if (p->second.empty()) {
-	p = backoffs.erase(p);
-	--backoff_count;
-      } else {
-	++p;
-      }
-    }
-    assert(backoff_count == (int)backoffs.size());
-  }
+  void ack_backoff(
+    CephContext *cct,
+    uint64_t id,
+    const hobject_t& start,
+    const hobject_t& end);
 
-  bool have_backoff(const hobject_t& oid, ceph_tid_t tid, uint32_t attempt) {
+  Backoff *have_backoff(const hobject_t& oid, ceph_tid_t tid, uint32_t attempt) {
     if (backoff_count.load()) {
       Mutex::Locker l(backoff_lock);
       assert(backoff_count == (int)backoffs.size());
@@ -204,14 +180,14 @@ struct Session : public RefCountedObject {
 	  for (auto& q : p->second) {
 	    if (r == 0 || cmp_bitwise(oid, q->end) < 0) {
 	      //if (tid >= q->first_tid) {
-		return true;
+	      return &(*q);
 		//}
 	    }
 	  }
 	}
       }
     }
-    return false;
+    return nullptr;
   }
 
   // called by PG::release_*_backoffs and PG::clear_backoffs()
