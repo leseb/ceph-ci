@@ -401,6 +401,7 @@ void PrimaryLogPG::on_local_recover(
       if (unreadable_object_entry != waiting_for_unreadable_object.end()) {
 	dout(20) << " kicking unreadable waiters on " << hoid << dendl;
 	requeue_ops(unreadable_object_entry->second);
+	release_backoffs(unreadable_object_entry->first);
 	waiting_for_unreadable_object.erase(unreadable_object_entry);
       }
     }
@@ -452,12 +453,14 @@ void PrimaryLogPG::on_global_recover(
   if (degraded_object_entry != waiting_for_degraded_object.end()) {
     dout(20) << " kicking degraded waiters on " << soid << dendl;
     requeue_ops(degraded_object_entry->second);
+    release_backoffs(degraded_object_entry->first);
     waiting_for_degraded_object.erase(degraded_object_entry);
   }
   auto unreadable_object_entry = waiting_for_unreadable_object.find(soid);
   if (unreadable_object_entry != waiting_for_unreadable_object.end()) {
     dout(20) << " kicking unreadable waiters on " << soid << dendl;
     requeue_ops(unreadable_object_entry->second);
+    release_backoffs(unreadable_object_entry->first);
     waiting_for_unreadable_object.erase(unreadable_object_entry);
   }
   finish_degraded_object(soid);
@@ -564,15 +567,8 @@ void PrimaryLogPG::wait_for_unreadable_object(
       return;  // drop it.
     session->put();  // get_priv takes a ref, and so does the SessionRef
     if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
-      Backoff *b = session->have_backoff(soid, osdop->get_tid(),
-					 osdop->get_retry_attempt());
-      if (!b) {
-	add_backoff(session, soid, soid, osdop->get_tid(),
-		    osdop->get_retry_attempt());
-      } else {
-	dout(10) << __func__ << " already have backoff " << *b << " "
-		 << " " << *osdop << dendl;
-      }
+      add_backoff(session, soid, soid, osdop->get_tid(),
+		  osdop->get_retry_attempt());
       backoff = true;
     }
   }
@@ -1648,14 +1644,6 @@ void PrimaryLogPG::do_request(
   if (can_discard_request(op)) {
     return;
   }
-  if (flushes_in_progress > 0) {
-    dout(20) << flushes_in_progress
-	     << " flushes_in_progress pending "
-	     << "waiting for active on " << op << dendl;
-    waiting_for_peered.push_back(op);
-    op->mark_delayed("waiting for peered");
-    return;
-  }
 
   // pg-wide backoffs
   if (op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
@@ -1693,8 +1681,18 @@ void PrimaryLogPG::do_request(
     MOSDBackoff *m = static_cast<MOSDBackoff*>(op->get_req());
     if (m->begin != m->end) {
       handle_backoff(op);
+      return;
     }
   }    
+
+  if (flushes_in_progress > 0) {
+    dout(20) << flushes_in_progress
+	     << " flushes_in_progress pending "
+	     << "waiting for active on " << op << dendl;
+    waiting_for_peered.push_back(op);
+    op->mark_delayed("waiting for peered");
+    return;
+  }
 
   if (!is_peered()) {
     // Delay unless PGBackend says it's ok
@@ -1992,15 +1990,36 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 	   << " flags " << ceph_osd_flag_string(m->get_flags())
 	   << dendl;
 
+  if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
+    Backoff *b = session->have_backoff(head, m->get_tid(),
+				       m->get_retry_attempt());
+    if (b) {
+      dout(10) << __func__ << " backoff " << *b << " "
+	       << " " << *m << dendl;
+    }
+  }
+
   // missing object?
   if (is_unreadable_object(head)) {
-    wait_for_unreadable_object(head, op);
+    if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF) &&
+	g_conf->osd_recovery_aggressive_backoff) {
+      add_backoff(session, head, head, m->get_tid(),
+		  m->get_retry_attempt());
+    } else {
+      wait_for_unreadable_object(head, op);
+    }
     return;
   }
 
   // degraded object?
   if (write_ordered && is_degraded_or_backfilling_object(head)) {
-    wait_for_degraded_object(head, op);
+    if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF) &&
+	g_conf->osd_recovery_aggressive_backoff) {
+      add_backoff(session, head, head, m->get_tid(),
+		  m->get_retry_attempt());
+    } else {
+      wait_for_degraded_object(head, op);
+    }
     return;
   }
 
@@ -9724,7 +9743,7 @@ void PrimaryLogPG::finish_degraded_object(const hobject_t& oid)
       i->second == oid.snap)
     objects_blocked_on_degraded_snap.erase(i);
 
-  release_backoffs(oid, oid);
+  release_backoffs(oid);
 }
 
 void PrimaryLogPG::_committed_pushed_object(
@@ -10048,6 +10067,9 @@ void PrimaryLogPG::mark_all_unfound_lost(
       [=]() {
 	requeue_ops(waiting_for_all_missing);
 	waiting_for_all_missing.clear();
+	for (auto& p : waiting_for_unreadable_object) {
+	  release_backoffs(p.first);
+	}
 	requeue_object_waiters(waiting_for_unreadable_object);
 	queue_recovery();
 
@@ -10293,6 +10315,9 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction *t)
   cancel_proxy_ops(is_primary());
 
   // requeue object waiters
+  for (auto& p : waiting_for_unreadable_object) {
+    release_backoffs(p.first);
+  }
   if (is_primary()) {
     requeue_object_waiters(waiting_for_unreadable_object);
   } else {
@@ -10301,6 +10326,7 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction *t)
   for (map<hobject_t,list<OpRequestRef>, hobject_t::BitwiseComparator>::iterator p = waiting_for_degraded_object.begin();
        p != waiting_for_degraded_object.end();
        waiting_for_degraded_object.erase(p++)) {
+    release_backoffs(p->first);
     if (is_primary())
       requeue_ops(p->second);
     else
@@ -10335,7 +10361,6 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction *t)
     waiting_for_all_missing.clear();
   }
   objects_blocked_on_cache_full.clear();
-
 
   for (list<pair<OpRequestRef, OpContext*> >::iterator i =
          in_progress_async_reads.begin();
@@ -10446,11 +10471,13 @@ void PrimaryLogPG::cancel_pull(const hobject_t &soid)
   if (waiting_for_degraded_object.count(soid)) {
     dout(20) << " kicking degraded waiters on " << soid << dendl;
     requeue_ops(waiting_for_degraded_object[soid]);
+    release_backoffs(soid);
     waiting_for_degraded_object.erase(soid);
   }
   if (waiting_for_unreadable_object.count(soid)) {
     dout(20) << " kicking unreadable waiters on " << soid << dendl;
     requeue_ops(waiting_for_unreadable_object[soid]);
+    release_backoffs(soid);
     waiting_for_unreadable_object.erase(soid);
   }
   if (is_missing_object(soid))

@@ -1091,6 +1091,9 @@ public:
   void add_backoff(SessionRef s, const hobject_t& begin, const hobject_t& end,
 		   ceph_tid_t tid, uint32_t attempt);
   void release_backoffs(const hobject_t& begin, const hobject_t& end);
+  void release_backoffs(const hobject_t& o) {
+    release_backoffs(o, o);
+  }
   void clear_backoffs();
   void split_backoffs(PG *child, unsigned split_bits);
 

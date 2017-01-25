@@ -3567,7 +3567,8 @@ void Objecter::handle_osd_backoff(MOSDBackoff *m)
       while (p != s->backoffs_by_id.end() &&
 	     p->second->id == m->id) {
 	OSDBackoff *b = p->second;
-	if (cmp_bitwise(b->begin, m->end) >= 0) {
+	int r = cmp_bitwise(b->begin, m->end);
+	if (r > 0 || (r == 0 && cmp_bitwise(m->begin, m->end) < 0)) {
 	  break;
 	}
 	if (cmp_bitwise(b->begin, m->end) <= 0 &&
@@ -3594,7 +3595,10 @@ void Objecter::handle_osd_backoff(MOSDBackoff *m)
 	  ++p;
 	}
 	for (auto& q : s->ops) {
-	  if (q.second->target.contained_by(m->begin, m->end)) {
+	  int r = q.second->target.contained_by(m->begin, m->end);
+	  ldout(cct, 20) << __func__ <<  " contained_by " << r << " on "
+			 << q.second->target.get_hobj() << dendl;
+	  if (r) {
 	    //q.second->target.backoff = false;
 	    _send_op(q.second);
 	  }

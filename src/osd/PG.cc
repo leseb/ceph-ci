@@ -2370,11 +2370,16 @@ void PG::release_backoffs(const hobject_t& begin, const hobject_t& end)
     auto p = backoffs.lower_bound(begin);
     while (p != backoffs.end()) {
       int r = cmp_bitwise(p->first, end);
-      if (r >= 0) {
+      dout(20) << __func__ << " ? " << r << " " << p->first << " " << p->second << dendl;
+      // note: must still examine begin=end=p->first case
+      if (r > 0 || (r == 0 && cmp_bitwise(begin, end) < 0)) {
 	break;
       }
+      dout(20) << __func__ << " checking " << p->first
+	       << " " << p->second << dendl;
       auto q = p->second.begin();
       while (q != p->second.end()) {
+	dout(20) << __func__ << " checking  " << *q << dendl;
 	int r = cmp_bitwise((*q)->begin, begin);
 	if (r == 0 || (r > 0 &&
 		       cmp_bitwise((*q)->end, end) < 0)) {

@@ -38,13 +38,15 @@ void Session::clear_backoffs()
 void Session::ack_backoff(
   CephContext *cct,
   uint64_t id,
-  const hobject_t& start,
+  const hobject_t& begin,
   const hobject_t& end)
 {
   Mutex::Locker l(backoff_lock);
-  auto p = backoffs.lower_bound(start);
+  auto p = backoffs.lower_bound(begin);
   while (p != backoffs.end()) {
-    if (cmp_bitwise(p->first, end) >= 0) {
+    // note: must still examine begin=end=p->first case
+    int r = cmp_bitwise(p->first, end);
+    if (r > 0 || (r == 0 && cmp_bitwise(begin, end) < 0)) {
       break;
     }
     auto q = p->second.begin();
