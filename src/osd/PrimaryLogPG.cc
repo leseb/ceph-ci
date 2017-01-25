@@ -1992,14 +1992,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 	   << " flags " << ceph_osd_flag_string(m->get_flags())
 	   << dendl;
 
-  if (write_ordered &&
-      scrubber.write_blocked_by_scrub(head, get_sort_bitwise())) {
-    dout(20) << __func__ << ": waiting for scrub" << dendl;
-    waiting_for_active.push_back(op);
-    op->mark_delayed("waiting for scrub");
-    return;
-  }
-
   // missing object?
   if (is_unreadable_object(head)) {
     wait_for_unreadable_object(head, op);
@@ -2009,6 +2001,14 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // degraded object?
   if (write_ordered && is_degraded_or_backfilling_object(head)) {
     wait_for_degraded_object(head, op);
+    return;
+  }
+
+  if (write_ordered &&
+      scrubber.write_blocked_by_scrub(head, get_sort_bitwise())) {
+    dout(20) << __func__ << ": waiting for scrub" << dendl;
+    waiting_for_scrub.push_back(op);
+    op->mark_delayed("waiting for scrub");
     return;
   }
 
@@ -3119,10 +3119,10 @@ void PrimaryLogPG::promote_object(ObjectContextRef obc,
     dout(10) << __func__ << " " << hoid
 	     << " blocked by scrub" << dendl;
     if (op) {
-      waiting_for_active.push_back(op);
+      waiting_for_scrub.push_back(op);
       op->mark_delayed("waiting for scrub");
       dout(10) << __func__ << " " << hoid
-	       << " placing op in waiting_for_active" << dendl;
+	       << " placing op in waiting_for_scrub" << dendl;
     } else {
       dout(10) << __func__ << " " << hoid
 	       << " no op, dropping on the floor" << dendl;
@@ -10288,9 +10288,6 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction *t)
 
   clear_scrub_reserved();
 
-  // requeues waiting_for_active
-  scrub_clear_state();
-
   cancel_copy_ops(is_primary());
   cancel_flush_ops(is_primary());
   cancel_proxy_ops(is_primary());
@@ -10310,6 +10307,10 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction *t)
       p->second.clear();
     finish_degraded_object(p->first);
   }
+
+  // requeues waiting_for_scrub
+  scrub_clear_state();
+
   for (map<hobject_t,list<OpRequestRef>, hobject_t::BitwiseComparator>::iterator p = waiting_for_blocked_object.begin();
        p != waiting_for_blocked_object.end();
        waiting_for_blocked_object.erase(p++)) {
