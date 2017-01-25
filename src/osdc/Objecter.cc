@@ -2461,7 +2461,6 @@ void Objecter::_op_submit(Op *op, shunique_lock& sul, ceph_tid_t *ptid)
 
   if (need_send) {
     // backoff?
-    bool backoff = false;
     hobject_t hoid = op->target.get_hobj();
     auto q = s->backoffs.lower_bound(hoid);
     if (q != s->backoffs.end()) {
@@ -2472,7 +2471,7 @@ void Objecter::_op_submit(Op *op, shunique_lock& sul, ceph_tid_t *ptid)
 	op->target.backoff = true;
       }
     }
-    if (!backoff) {
+    if (!op->target.backoff) {
       // no backoff, send!
       _send_op(op, m);
     }
