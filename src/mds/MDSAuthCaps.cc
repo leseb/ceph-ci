@@ -202,21 +202,16 @@ bool MDSAuthCaps::is_capable(const std::string &inode_path,
 	i->spec.allows(mask & (MAY_READ|MAY_EXECUTE), mask & MAY_WRITE)) {
       // we have a match; narrow down GIDs to those specifically allowed here
       vector<uint64_t> gids;
-      if ((std::find(i->match.gids.begin(), i->match.gids.end(), caller_gid) !=
-	   i->match.gids.end()) ||
-	  i->spec.allow_all()) {
+      if (std::find(i->match.gids.begin(), i->match.gids.end(), caller_gid) !=
+	  i->match.gids.end()) {
 	gids.push_back(caller_gid);
       }
-      if (caller_gid_list && !i->spec.allow_all()) {
+      if (caller_gid_list) {
 	std::set_intersection(i->match.gids.begin(), i->match.gids.end(),
 			      caller_gid_list->begin(), caller_gid_list->end(),
 			      std::back_inserter(gids));
+	std::sort(gids.begin(), gids.end());
       }
-      if (i->spec.allow_all()) {
-	gids.insert(gids.end(), caller_gid_list->begin(),
-		    caller_gid_list->end());
-      }
-      std::sort(gids.begin(), gids.end());
       
 
       // Spec is non-allowing if caller asked for set pool but spec forbids it
@@ -224,6 +219,11 @@ bool MDSAuthCaps::is_capable(const std::string &inode_path,
         if (!i->spec.allows_set_pool()) {
           continue;
         }
+      }
+
+      // check unix permissions?
+      if (i->match.uid == MDSCapMatch::MDS_AUTH_UID_ANY) {
+        return true;
       }
 
       // chown/chgrp
