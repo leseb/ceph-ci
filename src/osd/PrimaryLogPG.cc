@@ -569,7 +569,8 @@ void PrimaryLogPG::wait_for_unreadable_object(
 	add_backoff(session, soid, soid, osdop->get_tid(),
 		    osdop->get_retry_attempt());
       } else {
-	dout(10) << __func__ << " already have backoff on " << soid << dendl;
+	dout(10) << __func__ << " already have backoff on " << soid
+		 << " " << *osdop << dendl;
       }
       backoff = true;
     }
@@ -1658,7 +1659,7 @@ void PrimaryLogPG::do_request(
 				   osdop->get_retry_attempt())) {
 	  add_pg_backoff(session, osdop->get_tid(), osdop->get_retry_attempt());
 	} else {
-	  dout(10) << " already have backoff" << dendl;
+	  dout(10) << " already have backoff on " << *osdop << dendl;
 	}
 	return;
       }
@@ -1826,7 +1827,8 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   session->put();  // get_priv() takes a ref, and so does the intrusive_ptr
 
   if (session->have_backoff(head, m->get_tid(), m->get_retry_attempt())) {
-    dout(10) << __func__ << " backoff on session " << session << dendl;
+    dout(10) << __func__ << " backoff on session " << session
+	     << " op " << *m << dendl;
     return;
   }
 

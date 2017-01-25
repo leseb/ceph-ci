@@ -3594,7 +3594,7 @@ void Objecter::handle_osd_backoff(MOSDBackoff *m)
 	  ++p;
 	}
 	for (auto& q : s->ops) {
-	  if (q.second->target.contained_by(b->begin, b->end)) {
+	  if (q.second->target.contained_by(m->begin, m->end)) {
 	    //q.second->target.backoff = false;
 	    _send_op(q.second);
 	  }
