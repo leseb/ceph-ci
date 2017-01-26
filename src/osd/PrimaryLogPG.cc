@@ -566,7 +566,7 @@ void PrimaryLogPG::wait_for_unreadable_object(
     if (!session)
       return;  // drop it.
     session->put();  // get_priv takes a ref, and so does the SessionRef
-    if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
+    if (osdop->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
       add_backoff(session, soid, soid, osdop->get_tid(),
 		  osdop->get_retry_attempt());
       backoff = true;
@@ -1659,11 +1659,11 @@ void PrimaryLogPG::do_request(
     if (backoff) {
       MOSDOp *osdop = reinterpret_cast<MOSDOp*>(op->get_req());
       osdop->finish_decode();
-      SessionRef session((Session *)osdop->get_connection()->get_priv());
-      if (!session)
-	return;  // drop it.
-      session->put();  // get_priv takes a ref, and so does the SessionRef
-      if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
+      if (osdop->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
+	SessionRef session((Session *)osdop->get_connection()->get_priv());
+	if (!session)
+	  return;  // drop it.
+	session->put();  // get_priv takes a ref, and so does the SessionRef
 	Backoff *b = session->have_backoff(info.pgid.pgid.get_hobj_start(),
 					   osdop->get_tid(),
 					   osdop->get_retry_attempt());
@@ -1990,7 +1990,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 	   << " flags " << ceph_osd_flag_string(m->get_flags())
 	   << dendl;
 
-  if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
+  if (m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
     Backoff *b = session->have_backoff(head, m->get_tid(),
 				       m->get_retry_attempt());
     if (b) {
@@ -2001,7 +2001,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   // missing object?
   if (is_unreadable_object(head)) {
-    if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF) &&
+    if (m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF) &&
 	g_conf->osd_recovery_aggressive_backoff) {
       add_backoff(session, head, head, m->get_tid(),
 		  m->get_retry_attempt());
@@ -2013,7 +2013,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   // degraded object?
   if (write_ordered && is_degraded_or_backfilling_object(head)) {
-    if (session->con->has_feature(CEPH_FEATURE_RADOS_BACKOFF) &&
+    if (m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF) &&
 	g_conf->osd_recovery_aggressive_backoff) {
       add_backoff(session, head, head, m->get_tid(),
 		  m->get_retry_attempt());
