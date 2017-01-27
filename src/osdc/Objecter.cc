@@ -3175,8 +3175,8 @@ void Objecter::_send_op(Op *op, MOSDOp *m)
   hobject_t hoid = op->target.get_hobj();
   auto q = op->session->backoffs.lower_bound(hoid);
   if (q != op->session->backoffs.end()) {
-    dout(20) << __func__ << " ? " << q->first << " [" << q->second.begin
-	     << "," << q->second.end << ")" << dendl;
+    ldout(cct, 20) << __func__ << " ? " << q->first << " [" << q->second.begin
+		   << "," << q->second.end << ")" << dendl;
     int r = cmp_bitwise(hoid, q->second.begin);
     if (r == 0 || (r > 0 && cmp_bitwise(hoid, q->second.end) < 0)) {
       ldout(cct, 10) << __func__ << " backoff on " << hoid << ", queuing "
