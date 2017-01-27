@@ -3173,6 +3173,11 @@ void Objecter::_send_op(Op *op, MOSDOp *m)
 
   // backoff?
   hobject_t hoid = op->target.get_hobj();
+  ldout(cct,20) << __func__ << " hoid " << hoid << dendl;
+  for (auto& p : op->session->backoffs) {
+    ldout(cct, 20) << __func__ << "   b " << p.first << " [" << p.second.begin
+		   << " " << p.second.end << ")" << dendl;
+  }
   auto q = op->session->backoffs.lower_bound(hoid);
   if (q != op->session->backoffs.end()) {
     ldout(cct, 20) << __func__ << " ? " << q->first << " [" << q->second.begin
