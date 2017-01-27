@@ -174,6 +174,10 @@ struct Session : public RefCountedObject {
       Mutex::Locker l(backoff_lock);
       assert(backoff_count == (int)backoffs.size());
       auto p = backoffs.lower_bound(oid);
+      if (p != backoffs.begin() &&
+	  cmp_bitwise(p->first, oid) > 0) {
+	--p;
+      }
       if (p != backoffs.end()) {
 	int r = cmp_bitwise(oid, p->first);
 	if (r == 0 || r > 0) {

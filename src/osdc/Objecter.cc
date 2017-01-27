@@ -3179,6 +3179,12 @@ void Objecter::_send_op(Op *op, MOSDOp *m)
 		   << " " << p.second.end << ")" << dendl;
   }
   auto q = op->session->backoffs.lower_bound(hoid);
+  if (q != op->session->backoffs.begin()) {
+    --q;
+    if (cmp_bitwise(hoid, q->second.end) >= 0) {
+      ++q;
+    }
+  }
   if (q != op->session->backoffs.end()) {
     ldout(cct, 20) << __func__ << " ? " << q->first << " [" << q->second.begin
 		   << "," << q->second.end << ")" << dendl;

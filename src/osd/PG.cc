@@ -2370,7 +2370,8 @@ void PG::release_backoffs(const hobject_t& begin, const hobject_t& end)
     auto p = backoffs.lower_bound(begin);
     while (p != backoffs.end()) {
       int r = cmp_bitwise(p->first, end);
-      dout(20) << __func__ << " ? " << r << " " << p->first << " " << p->second << dendl;
+      dout(20) << __func__ << " ? " << r << " " << p->first
+	       << " " << p->second << dendl;
       // note: must still examine begin=end=p->first case
       if (r > 0 || (r == 0 && cmp_bitwise(begin, end) < 0)) {
 	break;

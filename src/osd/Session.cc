@@ -42,6 +42,8 @@ void Session::ack_backoff(
   const hobject_t& end)
 {
   Mutex::Locker l(backoff_lock);
+  // NOTE that ack may be for [a,c] but osd may now have [a,b) and
+  // [b,c) due to a PG split.
   auto p = backoffs.lower_bound(begin);
   while (p != backoffs.end()) {
     // note: must still examine begin=end=p->first case
