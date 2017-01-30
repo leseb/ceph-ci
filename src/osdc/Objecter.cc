@@ -3567,10 +3567,13 @@ void Objecter::handle_osd_backoff(MOSDBackoff *m)
       }
 
       // ack
-      con->send_message(new MOSDBackoff(CEPH_OSD_BACKOFF_OP_ACK_BLOCK,
-					m->id, m->begin, m->end,
-					m->first_tid, m->first_attempt,
-					osdmap->get_epoch()));
+      Message *r = new MOSDBackoff(CEPH_OSD_BACKOFF_OP_ACK_BLOCK,
+				   m->id, m->begin, m->end,
+				   m->first_tid, m->first_attempt,
+				   osdmap->get_epoch());
+      // this priority must match the MOSDOps from _prepare_osd_op
+      r->set_priority(cct->_conf->osd_client_op_priority);
+      con->send_message(r);
     }
     break;
 
