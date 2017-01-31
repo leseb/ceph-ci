@@ -557,26 +557,9 @@ void PrimaryLogPG::wait_for_unreadable_object(
   const hobject_t& soid, OpRequestRef op)
 {
   assert(is_unreadable_object(soid));
-
-  bool backoff = false;
-  if (missing_loc.is_unfound(soid) &&
-      op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
-    MOSDOp *osdop = reinterpret_cast<MOSDOp*>(op->get_req());
-    SessionRef session((Session *)osdop->get_connection()->get_priv());
-    if (!session)
-      return;  // drop it.
-    session->put();  // get_priv takes a ref, and so does the SessionRef
-    if (osdop->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
-      add_backoff(session, soid, soid, osdop->get_tid(),
-		  osdop->get_retry_attempt());
-      backoff = true;
-    }
-  }
   maybe_kick_recovery(soid);
-  if (!backoff) {
-    waiting_for_unreadable_object[soid].push_back(op);
-    op->mark_delayed("waiting for missing object");
-  }
+  waiting_for_unreadable_object[soid].push_back(op);
+  op->mark_delayed("waiting for missing object");
 }
 
 void PrimaryLogPG::wait_for_all_missing(OpRequestRef op)
@@ -1646,44 +1629,48 @@ void PrimaryLogPG::do_request(
   }
 
   // pg-wide backoffs
-  if (op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
-    bool backoff =
-      is_down() ||
-      is_incomplete() ||
-      (!is_active() && is_peered());
-    if (g_conf->osd_peering_aggressive_backoff && !backoff) {
-      if (is_peering()) {
-	backoff = true;
+  Message *m = op->get_req();
+  if (m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
+    SessionRef session((Session *)m->get_connection()->get_priv());
+    if (!session)
+      return;  // drop it.
+    session->put();  // get_priv takes a ref, and so does the SessionRef
+
+    if (op->get_req()->get_type() == CEPH_MSG_OSD_OP) {
+      Backoff *b = session->have_backoff(info.pgid.pgid.get_hobj_start(),
+					 0, 0 /* osdop->get_tid(),
+						 osdop->get_retry_attempt()*/);
+      if (b) {
+	dout(10) << " have backoff " << *b << " " << *m << dendl;
+	assert(!b->is_acked() || !g_conf->osd_debug_crash_on_ignored_backoff);
+	return;
+      }
+
+      bool backoff =
+	is_down() ||
+	is_incomplete() ||
+	(!is_active() && is_peered());
+      if (g_conf->osd_peering_aggressive_backoff && !backoff) {
+	if (is_peering()) {
+	  backoff = true;
+	}
+      }
+      if (backoff) {
+	MOSDOp *osdop = reinterpret_cast<MOSDOp*>(m);
+	osdop->finish_decode();
+	add_pg_backoff(session, osdop->get_tid(), osdop->get_retry_attempt());
+	return;
       }
     }
-    if (backoff) {
-      MOSDOp *osdop = reinterpret_cast<MOSDOp*>(op->get_req());
-      osdop->finish_decode();
-      if (osdop->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
-	SessionRef session((Session *)osdop->get_connection()->get_priv());
-	if (!session)
-	  return;  // drop it.
-	session->put();  // get_priv takes a ref, and so does the SessionRef
-	Backoff *b = session->have_backoff(info.pgid.pgid.get_hobj_start(),
-					   osdop->get_tid(),
-					   osdop->get_retry_attempt());
-	if (!b) {
-	  add_pg_backoff(session, osdop->get_tid(), osdop->get_retry_attempt());
-	} else {
-	  dout(10) << " already have backoff " << *b << " " << *osdop << dendl;
-	}
+    // pg backoff acks at pg-level
+    if (op->get_req()->get_type() == CEPH_MSG_OSD_BACKOFF) {
+      MOSDBackoff *ba = static_cast<MOSDBackoff*>(m);
+      if (ba->begin != ba->end) {
+	handle_backoff(op);
 	return;
       }
     }
   }
-  // pg backoff acks at pg-level
-  if (op->get_req()->get_type() == CEPH_MSG_OSD_BACKOFF) {
-    MOSDBackoff *m = static_cast<MOSDBackoff*>(op->get_req());
-    if (m->begin != m->end) {
-      handle_backoff(op);
-      return;
-    }
-  }    
 
   if (flushes_in_progress > 0) {
     dout(20) << flushes_in_progress
@@ -1835,18 +1822,24 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 		 CEPH_NOSNAP, m->get_pg().ps(),
 		 info.pgid.pool(), m->get_object_locator().nspace);
 
-  SessionRef session((Session *)m->get_connection()->get_priv());
-  if (!session.get()) {
-    dout(10) << __func__ << " no session" << dendl;
-    return;
-  }
-  session->put();  // get_priv() takes a ref, and so does the intrusive_ptr
+  bool can_backoff =
+    m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF);
+  SessionRef session;
+  if (can_backoff) {
+    session = ((Session *)m->get_connection()->get_priv());
+    if (!session.get()) {
+      dout(10) << __func__ << " no session" << dendl;
+      return;
+    }
+    session->put();  // get_priv() takes a ref, and so does the intrusive_ptr
 
-  Backoff *b = session->have_backoff(head, m->get_tid(),
-				     m->get_retry_attempt());
-  if (b) {
-    dout(10) << __func__ << " have backoff " << *b << " " << *m << dendl;
-    return;
+    Backoff *b = session->have_backoff(head, m->get_tid(),
+				       m->get_retry_attempt());
+    if (b) {
+      dout(10) << __func__ << " have backoff " << *b << " " << *m << dendl;
+      assert(!b->is_acked() || !g_conf->osd_debug_crash_on_ignored_backoff);
+      return;
+    }
   }
 
   if (m->has_flag(CEPH_OSD_FLAG_PARALLELEXEC)) {
@@ -1990,21 +1983,14 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 	   << " flags " << ceph_osd_flag_string(m->get_flags())
 	   << dendl;
 
-  if (m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF)) {
-    Backoff *b = session->have_backoff(head, m->get_tid(),
-				       m->get_retry_attempt());
-    if (b) {
-      dout(10) << __func__ << " backoff " << *b << " "
-	       << " " << *m << dendl;
-    }
-  }
-
   // missing object?
   if (is_unreadable_object(head)) {
-    if (m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF) &&
-	g_conf->osd_recovery_aggressive_backoff) {
+    if (can_backoff &&
+	(g_conf->osd_recovery_aggressive_backoff ||
+	 missing_loc.is_unfound(head))) {
       add_backoff(session, head, head, m->get_tid(),
 		  m->get_retry_attempt());
+      maybe_kick_recovery(head);
     } else {
       wait_for_unreadable_object(head, op);
     }
@@ -2013,8 +1999,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   // degraded object?
   if (write_ordered && is_degraded_or_backfilling_object(head)) {
-    if (m->get_connection()->has_feature(CEPH_FEATURE_RADOS_BACKOFF) &&
-	g_conf->osd_recovery_aggressive_backoff) {
+    if (can_backoff && g_conf->osd_recovery_aggressive_backoff) {
       add_backoff(session, head, head, m->get_tid(),
 		  m->get_retry_attempt());
     } else {
