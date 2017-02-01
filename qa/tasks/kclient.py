@@ -113,7 +113,7 @@ def task(ctx, config):
             if mount.is_mounted():
                 try:
                     mount.umount()
-                except CommandFailedError:
+                except (CommandFailedError, MaxWhileTries):
                     log.warn("Ordinary umount failed, forcing...")
                     forced = True
                     mount.umount_wait(force=True)
